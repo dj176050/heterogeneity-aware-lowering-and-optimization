@@ -538,6 +538,11 @@ void GenericCXXCodeGen::RunOnFunction(Function& function) {
         os_ << "odla_SetComputationItem(Comp, ODLA_OPT_BATCH_SIZE, "
                "(odla_item_value) &opt_batch_size);\n";
       }
+      if (opts_.enable_bf16) {
+        os_ << "bool bf16_mode = true;\n";
+        os_ << "odla_SetComputationItem(Comp, ODLA_BF16_MODE, "
+               "(odla_item_value) &bf16_mode);\n";
+      }
     } else {
       os_ << "static odla_computation comp;\n"; // only for legacy odla
       os_ << "static void " << helper_func_name
@@ -578,6 +583,11 @@ void GenericCXXCodeGen::RunOnFunction(Function& function) {
                "(odla_item_value) &max_batch_size);\n";
         os_ << "odla_SetComputationItem(Comp, ODLA_OPT_BATCH_SIZE, "
                "(odla_item_value) &opt_batch_size);\n";
+      }
+      if (opts_.enable_bf16) {
+        os_ << "bool bf16_mode = true;\n";
+        os_ << "odla_SetComputationItem(Comp, ODLA_BF16_MODE, "
+               "(odla_item_value) &bf16_mode);\n";
       }
     }
   }

@@ -149,6 +149,40 @@ static dnnl::memory::data_type getDataType(const odla_element_type ty) {
   return dt;
 }
 
+// get shape total element size.
+static inline int64_t GetCountFromAxis(const odla_value_shape& shape,
+                                       const odla_int32 axis) {
+  int64_t size = 1;
+  for (int i = axis; i < shape.size; i++) {
+    size = size * shape.dims[i];
+  }
+  return size;
+}
+
+template <typename Tin, typename Tout>
+static void ArgMax(const Tin* input, Tout* output, odla_int32 axis,
+                   const odla_value_shape& shape) {
+  int64_t dim, axis_dist;
+  dim = shape.dims[axis];
+  // Distance between values of axis in blob
+  axis_dist = GetCountFromAxis(shape, axis) / dim;
+  int num = GetCountFromAxis(shape, 0) / dim;
+
+  std::vector<std::pair<Tin, Tout>> output_data_vector(dim);
+  for (int i = 0; i < num; ++i) {
+    for (Tout j = 0; j < dim; ++j) {
+      output_data_vector[j] = std::make_pair(
+          input[(i / axis_dist * dim + j) * axis_dist + i % axis_dist], j);
+    }
+    std::partial_sort(output_data_vector.begin(),
+                      output_data_vector.begin() + 1, output_data_vector.end(),
+                      std::greater<std::pair<Tin, Tout>>());
+    // Produces max_ind per axis
+    output[(i / axis_dist) * axis_dist + i % axis_dist] =
+        output_data_vector[0].second;
+  }
+}
+
 static dnnl::memory::dims getDims(const odla_value_shape& od) {
   auto dims = dnnl::memory::dims(od.dims, od.dims + od.size);
   return dims;
@@ -208,8 +242,18 @@ static odla_value CreateValue(const dnnl::memory& mem,
 
 extern "C" {
 
-void odla_ConfigTargetOptions(odla_computation comp, target_opts opts) {
-  comp->opts.enable_bf16 = opts.enable_bf16;
+odla_status odla_SetComputationItem(odla_computation comp, odla_item_type type,
+                                    odla_item_value value) {
+  switch (type) {
+    case ODLA_BF16_MODE:
+      comp->opts.enable_bf16 = *(reinterpret_cast<bool*>(value));
+      break;
+    default:
+      std::cerr << "Unsupported property type: " << type << std::endl;
+      return ODLA_FAILURE;
+  }
+
+  return ODLA_SUCCESS;
 }
 
 odla_status odla_CreateComputation(odla_computation* computation) {
@@ -1474,6 +1518,39 @@ odla_value odla_Tile(odla_value input, const odla_uint32* repeat,
   odla_value v = CreateValue(ret_mem, output_dims, value_id);
   v->is_const = true;
   return v;
+}
+
+odla_value odla_ArgMax(odla_value input, odla_int32 axis, odla_bool keep_dims,
+                       odla_bool return_last_index,
+                       odla_value_type output_value_type,
+                       const odla_value_id value_id) {
+  auto input_md = input->mem.get_desc();
+  const auto& input_type = input_md.data_type();
+  dnnl::memory::desc md = getMemoryDesc(output_value_type);
+  dnnl::memory dst_mem = dnnl::memory(md, g_comp->eng);
+  const auto& input_dims = input->shape;
+  std::function<void()> op;
+  assert(input_type == dnnl::memory::data_type::f32);
+
+  if (output_value_type.element_type == ODLA_INT64) {
+    op = [&]() {
+      ArgMax<float, int64_t>(static_cast<float*>(input->mem.get_data_handle()),
+                             static_cast<int64_t*>(dst_mem.get_data_handle()),
+                             axis, input_dims);
+    };
+  } else if (output_value_type.element_type == ODLA_INT32) {
+    op = [&]() {
+      ArgMax<float, int32_t>(static_cast<float*>(input->mem.get_data_handle()),
+                             static_cast<int32_t*>(dst_mem.get_data_handle()),
+                             axis, input_dims);
+    };
+  } else {
+    assert(0);
+  }
+
+  add_op(op);
+  InterpretIfNeeded();
+  return CreateValue(dst_mem, output_value_type.shape, value_id);
 }
 
 } // C extern

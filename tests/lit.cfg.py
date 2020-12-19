@@ -43,6 +43,7 @@ if len(tensorrt_dir):
 
 print(tensorrt_dir)
 test_include = os.path.sep.join((config.test_source_root, 'include'))
+config.test_source_root = os.path.sep.join((config.test_source_root, 'benchmarks/mobilenet/mobilenet_test.cc'))
 
 include_path = '-I %s -I %s -I %s -I %s -I %s' % (config.halo_header_src_dir,
                                                   config.halo_header_build_dir, test_include, config.llvm_src_dir, config.llvm_build_dir)
