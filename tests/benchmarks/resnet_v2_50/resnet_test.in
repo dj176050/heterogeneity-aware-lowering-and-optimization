@@ -1,0 +1,83 @@
+//===- resnet_test.in -----------------------------------------------------===//
+//
+// Copyright (C) 2019-2020 Alibaba Group Holding Limited.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// =============================================================================
+
+#include <vector>
+
+#include "resnet_data.h"
+#include "test_util.h"
+
+extern "C" {
+#ifdef DYNAMIC_BATCH
+void resnet50_v2(const float* in, float* out, int batch_size);
+#else
+void resnet50_v2(const float* in, float* out);
+#endif
+}
+
+#ifndef BATCH
+#define BATCH 1
+#endif
+
+int main(int argc, char** argv) {
+  float out[1001 * BATCH];
+#ifdef ITER_TEST
+  const int iter = ITER_TEST;
+#else
+  const int iter = 1;
+#endif
+
+  size_t input_size = sizeof(test_input) / sizeof(test_input[0]);
+  size_t output_size = sizeof(test_output_ref) / sizeof(out[0]);
+  std::vector<float> batch_input;
+  std::vector<float> batch_output_ref;
+  batch_input.reserve(input_size * BATCH);
+  batch_output_ref.reserve(output_size * BATCH);
+
+  for (int i = 0; i < BATCH; ++i) {
+    batch_input.insert(batch_input.end(), test_input, test_input + input_size);
+    batch_output_ref.insert(batch_output_ref.end(), test_output_ref,
+                            test_output_ref + output_size);
+  }
+
+#ifdef DYNAMIC_BATCH
+  resnet50_v2(batch_input.data(), out, BATCH);
+#else
+  resnet50_v2(batch_input.data(), out);
+#endif
+
+  if (Verify(out, batch_output_ref.data(), batch_output_ref.size(), 1e-4)) {
+    std::cout << "Batch:" << BATCH << "\n";
+    std::cout << "Result verified\n";
+#ifdef TIMING_TEST
+    auto begin_time = Now();
+    for (int i = 0; i < iter; ++i) {
+#ifdef DYNAMIC_BATCH
+      resnet50_v2(batch_input.data(), out, BATCH);
+#else
+      resnet50_v2(batch_input.data(), out);
+#endif
+    }
+    auto end_time = Now();
+    std::cout << "Elapse time: " << GetDuration(begin_time, end_time) / iter
+              << " seconds (avg of " << iter << " iters)\n";
+#endif
+    return 0;
+  }
+
+  std::cout << " Failed\n";
+  return 1;
+}
