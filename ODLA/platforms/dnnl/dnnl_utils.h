@@ -17,7 +17,7 @@
 
 #include <immintrin.h>
 
-#if defined(__AVX512F__)
+#if 1
 #include "dnnl_utils_avx512.h"
 #else
 
