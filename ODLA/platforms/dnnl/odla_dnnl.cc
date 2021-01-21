@@ -1432,10 +1432,10 @@ odla_value gemm_op(odla_value lhs, odla_bool transpose_lhs, odla_value rhs,
 
   // if (g_comp->opts.bf16_mode != BF16_DISABLE && dt != dt_dst) {
   if (g_comp->opts.enable_bf16 && dt != dt_dst) {
-    lhs->mem = cast_odla_value(lhs, dnnl::memory::data_type::bf16);
-    rhs->mem = cast_odla_value(rhs, dnnl::memory::data_type::bf16);
+    lhs->mem = cast_op(lhs, dnnl::memory::data_type::bf16);
+    rhs->mem = cast_op(rhs, dnnl::memory::data_type::bf16);
     if (bias) {
-      bias->mem = cast_odla_value(bias, dnnl::memory::data_type::bf16);
+      bias->mem = cast_op(bias, dnnl::memory::data_type::bf16);
     }
   }
 
@@ -1535,10 +1535,10 @@ odla_value batch_gemm_op(odla_value lhs, odla_bool transpose_lhs,
 
   // add reorder process
   if (g_comp->opts.enable_bf16 && dt != dt_dst) {
-    lhs->mem = cast_odla_value(lhs, dnnl::memory::data_type::bf16);
-    rhs->mem = cast_odla_value(rhs, dnnl::memory::data_type::bf16);
+    lhs->mem = cast_op(lhs, dnnl::memory::data_type::bf16);
+    rhs->mem = cast_op(rhs, dnnl::memory::data_type::bf16);
     if (bias) {
-      bias->mem = cast_odla_value(bias, dnnl::memory::data_type::bf16);
+      bias->mem = cast_op(bias, dnnl::memory::data_type::bf16);
     }
   }
 
