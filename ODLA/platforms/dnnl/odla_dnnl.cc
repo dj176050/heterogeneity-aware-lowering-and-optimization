@@ -615,6 +615,7 @@ static odla_value binary_eltwise_s32(dnnl::algorithm alg, dnnl::memory lhs_mem,
   };
   add_op(elem_op);
   odla_value v = CreateValue(rhs_mem, shape, id);
+  InterpretIfNeeded();
   return v;
 }
 
@@ -1412,26 +1413,48 @@ odla_value gemm_op(odla_value lhs, odla_bool transpose_lhs, odla_value rhs,
   const auto& lhs_dims = lhs->shape;
   const auto& rhs_dims = rhs->shape;
   auto dt = lhs->mem.get_desc().data_type();
+  /*
+  auto dt_dst = (g_comp->opts.bf16_mode != BF16_DISABLE)
+                    ? getDataType(ODLA_BFLOAT16)
+                    : dt;
+  */
+
+  auto dt_dst = (g_comp->opts.enable_bf16) ? getDataType(ODLA_BFLOAT16) : dt;
+
   long M = output_dims.dims[0], N = output_dims.dims[1],
        K = !transpose_rhs ? rhs_dims.dims[0] : rhs_dims.dims[1];
   long lda = transpose_lhs ? M : K;
   long ldb = transpose_rhs ? K : N;
   long ldc = N;
+
+  auto orig_lhs_mem = lhs->mem;
+  auto orig_rhs_mem = rhs->mem;
+
+  // if (g_comp->opts.bf16_mode != BF16_DISABLE && dt != dt_dst) {
+  if (g_comp->opts.enable_bf16 && dt != dt_dst) {
+    lhs->mem = cast_odla_value(lhs, dnnl::memory::data_type::bf16);
+    rhs->mem = cast_odla_value(rhs, dnnl::memory::data_type::bf16);
+    if (bias) {
+      bias->mem = cast_odla_value(bias, dnnl::memory::data_type::bf16);
+    }
+  }
+
   dnnl::memory::desc lhs_md(
-      {M, K}, dt,
+      {M, K}, dt_dst,
       transpose_lhs ? dnnl::memory::dims{1, lda} : dnnl::memory::dims{lda, 1});
 
   dnnl::memory::desc rhs_md(
-      {K, N}, dt,
+      {K, N}, dt_dst,
       transpose_rhs ? dnnl::memory::dims{1, ldb} : dnnl::memory::dims{ldb, 1});
 
   dnnl::memory::desc ret_md({M, N}, dt, {ldc, 1});
   auto ret_mem = dnnl::memory(ret_md, g_comp->eng);
   bool is_elements_add = false;
+
   if (bias) {
     auto bias_elements = GetTotalElements(bias->shape);
     if (bias_elements == N) {
-      dnnl::memory::desc bias_md({1, N}, dt, dnnl::memory::format_tag::ab);
+      dnnl::memory::desc bias_md({1, N}, dt_dst, dnnl::memory::format_tag::ab);
       auto bias_mem =
           dnnl::memory(bias_md, g_comp->eng, bias->mem.get_data_handle());
       dnnl::matmul::desc md(lhs_md, rhs_md, bias_md, ret_md);
@@ -1467,7 +1490,8 @@ odla_value gemm_op(odla_value lhs, odla_bool transpose_lhs, odla_value rhs,
       CreateValue(ret_mem, output_dims, is_elements_add ? nullptr : id);
 
   InterpretIfNeeded();
-
+  lhs->mem = orig_lhs_mem;
+  rhs->mem = orig_rhs_mem;
   return is_elements_add ? odla_Add(v, bias, id) : v;
 }
 
@@ -1503,18 +1527,32 @@ odla_value batch_gemm_op(odla_value lhs, odla_bool transpose_lhs,
   auto ret_dims = getGemmDims(output_dims, false);
   auto ret_strides = getGemmStrides(ret_dims, false);
   auto dt = lhs->mem.get_desc().data_type();
-  dnnl::memory::desc lhs_md(lhs_dims, dt, lhs_strides);
+  auto dt_dst = (g_comp->opts.enable_bf16) ? getDataType(ODLA_BFLOAT16) : dt;
 
-  dnnl::memory::desc rhs_md(rhs_dims, dt, rhs_strides);
+  // keep original memory layout
+  auto orig_lhs_mem = lhs->mem;
+  auto orig_rhs_mem = rhs->mem;
 
+  // add reorder process
+  if (g_comp->opts.enable_bf16 && dt != dt_dst) {
+    lhs->mem = cast_odla_value(lhs, dnnl::memory::data_type::bf16);
+    rhs->mem = cast_odla_value(rhs, dnnl::memory::data_type::bf16);
+    if (bias) {
+      bias->mem = cast_odla_value(bias, dnnl::memory::data_type::bf16);
+    }
+  }
+
+  dnnl::memory::desc lhs_md(lhs_dims, dt_dst, lhs_strides);
+  dnnl::memory::desc rhs_md(rhs_dims, dt_dst, rhs_strides);
   dnnl::memory::desc ret_md(ret_dims, dt, ret_strides);
   auto ret_mem = dnnl::memory(ret_md, g_comp->eng);
+
   bool is_elements_add = false;
   int64_t N = ret_dims[output_dims.size - 1];
   if (bias) {
     auto bias_elements = GetTotalElements(bias->shape);
     if (bias_elements == N) {
-      dnnl::memory::desc bias_md({1, N}, dt, dnnl::memory::format_tag::ab);
+      dnnl::memory::desc bias_md({1, N}, dt_dst, dnnl::memory::format_tag::ab);
       auto bias_mem =
           dnnl::memory(bias_md, g_comp->eng, bias->mem.get_data_handle());
       dnnl::matmul::desc md(lhs_md, rhs_md, bias_md, ret_md);
@@ -1550,7 +1588,8 @@ odla_value batch_gemm_op(odla_value lhs, odla_bool transpose_lhs,
       CreateValue(ret_mem, output_dims, is_elements_add ? nullptr : id);
 
   InterpretIfNeeded();
-
+  lhs->mem = orig_lhs_mem;
+  rhs->mem = orig_rhs_mem;
   return is_elements_add ? odla_Add(v, bias, id) : v;
 }
 
@@ -1812,8 +1851,10 @@ odla_value odla_ArgMax(odla_value input, odla_int32 axis, odla_bool keep_dims,
   dnnl::memory dst_mem = dnnl::memory(md, g_comp->eng);
   const auto& input_dims = input->shape;
   std::function<void()> op;
-  if(input_type != dnnl::memory::data_type::f32) {
-    auto f32_md = dnnl::memory::desc(getDims(input->shape), dnnl::memory::data_type::f32, getFormatTag(input->shape));
+  if (input_type != dnnl::memory::data_type::f32) {
+    auto f32_md =
+        dnnl::memory::desc(getDims(input->shape), dnnl::memory::data_type::f32,
+                           getFormatTag(input->shape));
     auto f32_mem = dnnl::memory(f32_md, g_comp->eng);
     auto r = dnnl::reorder(input->mem, f32_mem);
     add_op(r, {{DNNL_ARG_FROM, input->mem}, {DNNL_ARG_TO, f32_mem}});
