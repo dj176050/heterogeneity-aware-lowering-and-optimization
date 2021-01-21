@@ -169,6 +169,7 @@ template <typename Tin, typename Tout>
 static void ArgMax(const Tin* input, Tout* output, odla_int32 axis,
                    const odla_value_shape& shape) {
   int64_t dim, axis_dist;
+  axis = axis < 0 ? shape.size + axis : axis;
   dim = shape.dims[axis];
   // Distance between values of axis in blob
   axis_dist = GetCountFromAxis(shape, axis) / dim;
@@ -1799,6 +1800,45 @@ odla_value odla_Tile(odla_value input, const odla_uint32* repeat,
   odla_value v = CreateValue(ret_mem, output_dims, value_id);
   v->is_const = true;
   return v;
+}
+
+odla_value odla_ArgMax(odla_value input, odla_int32 axis, odla_bool keep_dims,
+                       odla_bool return_last_index,
+                       odla_value_type output_value_type,
+                       const odla_value_id value_id) {
+  auto input_md = input->mem.get_desc();
+  const auto& input_type = input_md.data_type();
+  dnnl::memory::desc md = getMemoryDesc(output_value_type);
+  dnnl::memory dst_mem = dnnl::memory(md, g_comp->eng);
+  const auto& input_dims = input->shape;
+  std::function<void()> op;
+  if(input_type != dnnl::memory::data_type::f32) {
+    auto f32_md = dnnl::memory::desc(getDims(input->shape), dnnl::memory::data_type::f32, getFormatTag(input->shape));
+    auto f32_mem = dnnl::memory(f32_md, g_comp->eng);
+    auto r = dnnl::reorder(input->mem, f32_mem);
+    add_op(r, {{DNNL_ARG_FROM, input->mem}, {DNNL_ARG_TO, f32_mem}});
+    input->mem = f32_mem;
+  }
+
+  if (output_value_type.element_type == ODLA_INT64) {
+    op = [input, dst_mem, axis, input_dims]() {
+      ArgMax<float, int64_t>(static_cast<float*>(input->mem.get_data_handle()),
+                             static_cast<int64_t*>(dst_mem.get_data_handle()),
+                             axis, input_dims);
+    };
+  } else if (output_value_type.element_type == ODLA_INT32) {
+    op = [input, dst_mem, axis, input_dims]() {
+      ArgMax<float, int32_t>(static_cast<float*>(input->mem.get_data_handle()),
+                             static_cast<int32_t*>(dst_mem.get_data_handle()),
+                             axis, input_dims);
+    };
+  } else {
+    assert(0);
+  }
+
+  add_op(op);
+  InterpretIfNeeded();
+  return CreateValue(dst_mem, output_value_type.shape, value_id);
 }
 
 } // C extern
