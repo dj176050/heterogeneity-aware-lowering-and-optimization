@@ -1406,122 +1406,52 @@ odla_value odla_ReduceMean(odla_value input, odla_size_t num_of_axes,
                    keep_dims, output_dims, id);
 }
 
-odla_value gemm_op(odla_value lhs, odla_bool transpose_lhs, odla_value rhs,
-                   odla_bool transpose_rhs, odla_float32 alpha,
-                   odla_float32 beta, odla_value bias,
-                   odla_value_shape output_dims, const odla_value_id id) {
-  const auto& lhs_dims = lhs->shape;
-  const auto& rhs_dims = rhs->shape;
-  auto dt = lhs->mem.get_desc().data_type();
-  /*
-  auto dt_dst = (g_comp->opts.bf16_mode != BF16_DISABLE)
-                    ? getDataType(ODLA_BFLOAT16)
-                    : dt;
-  */
-
-  auto dt_dst = (g_comp->opts.enable_bf16) ? getDataType(ODLA_BFLOAT16) : dt;
-
-  long M = output_dims.dims[0], N = output_dims.dims[1],
-       K = !transpose_rhs ? rhs_dims.dims[0] : rhs_dims.dims[1];
-  long lda = transpose_lhs ? M : K;
-  long ldb = transpose_rhs ? K : N;
-  long ldc = N;
-
-  auto orig_lhs_mem = lhs->mem;
-  auto orig_rhs_mem = rhs->mem;
-
-  // if (g_comp->opts.bf16_mode != BF16_DISABLE && dt != dt_dst) {
-  if (g_comp->opts.enable_bf16 && dt != dt_dst) {
-    lhs->mem = cast_op(lhs, dnnl::memory::data_type::bf16);
-    rhs->mem = cast_op(rhs, dnnl::memory::data_type::bf16);
-    if (bias) {
-      bias->mem = cast_op(bias, dnnl::memory::data_type::bf16);
-    }
-  }
-
-  dnnl::memory::desc lhs_md(
-      {M, K}, dt_dst,
-      transpose_lhs ? dnnl::memory::dims{1, lda} : dnnl::memory::dims{lda, 1});
-
-  dnnl::memory::desc rhs_md(
-      {K, N}, dt_dst,
-      transpose_rhs ? dnnl::memory::dims{1, ldb} : dnnl::memory::dims{ldb, 1});
-
-  dnnl::memory::desc ret_md({M, N}, dt, {ldc, 1});
-  auto ret_mem = dnnl::memory(ret_md, g_comp->eng);
-  bool is_elements_add = false;
-
-  if (bias) {
-    auto bias_elements = GetTotalElements(bias->shape);
-    if (bias_elements == N) {
-      dnnl::memory::desc bias_md({1, N}, dt_dst, dnnl::memory::format_tag::ab);
-      auto bias_mem =
-          dnnl::memory(bias_md, g_comp->eng, bias->mem.get_data_handle());
-      dnnl::matmul::desc md(lhs_md, rhs_md, bias_md, ret_md);
-      dnnl::matmul::primitive_desc pd(md, g_comp->eng);
-      dnnl::primitive prim = dnnl::matmul(pd);
-      add_op(prim, {{DNNL_ARG_SRC, lhs->mem},
-                    {DNNL_ARG_WEIGHTS, rhs->mem},
-                    {DNNL_ARG_BIAS, bias_mem},
-                    {DNNL_ARG_DST, ret_mem}});
-    } else if (bias_elements == 1) {
-      dnnl::post_ops ops;
-      dnnl::primitive_attr gemm_attr;
-      float beta = ((float*)bias->mem.get_data_handle())[0];
-      ops.append_eltwise(1.f, dnnl::algorithm::eltwise_linear, 0.f, beta);
-      gemm_attr.set_post_ops(ops);
-      dnnl::matmul::desc md(lhs_md, rhs_md, ret_md);
-      dnnl::matmul::primitive_desc pd(md, gemm_attr, g_comp->eng);
-      dnnl::primitive prim = dnnl::matmul(pd);
-      add_op(prim, {{DNNL_ARG_SRC, lhs->mem},
-                    {DNNL_ARG_WEIGHTS, rhs->mem},
-                    {DNNL_ARG_DST, ret_mem}});
-    } else
-      is_elements_add = true;
-  } else {
-    dnnl::matmul::desc md(lhs_md, rhs_md, ret_md);
-    dnnl::matmul::primitive_desc pd(md, g_comp->eng);
-    dnnl::primitive prim = dnnl::matmul(pd);
-    add_op(prim, {{DNNL_ARG_SRC, lhs->mem},
-                  {DNNL_ARG_WEIGHTS, rhs->mem},
-                  {DNNL_ARG_DST, ret_mem}});
-  }
-  odla_value v =
-      CreateValue(ret_mem, output_dims, is_elements_add ? nullptr : id);
-
-  InterpretIfNeeded();
-  lhs->mem = orig_lhs_mem;
-  rhs->mem = orig_rhs_mem;
-  return is_elements_add ? odla_Add(v, bias, id) : v;
-}
-
-odla_value batch_gemm_op(odla_value lhs, odla_bool transpose_lhs,
-                         odla_value rhs, odla_bool transpose_rhs,
-                         odla_float32 alpha, odla_float32 beta, odla_value bias,
-                         odla_value_shape output_dims, const odla_value_id id) {
+odla_value odla_Gemm(odla_value lhs, odla_bool transpose_lhs, odla_value rhs,
+                     odla_bool transpose_rhs, odla_float32 alpha,
+                     odla_float32 beta, odla_value bias,
+                     odla_value_shape output_dims, const odla_value_id id) {
   auto getGemmDims = [](odla_value_shape shape,
                         odla_bool transpose) -> dnnl::memory::dims {
     auto dnnl_dims = getDims(shape);
     int ndims = dnnl_dims.size();
     int64_t group_size = 1;
+
     for (int i = 0; i < ndims - 2; i++) {
       group_size *= dnnl_dims[i];
     }
     if (transpose) {
       std::swap(dnnl_dims[ndims - 2], dnnl_dims[ndims - 1]);
     }
-    return {group_size, dnnl_dims[ndims - 2], dnnl_dims[ndims - 1]};
+
+    if (ndims == 2) {
+      return {dnnl_dims[ndims - 2], dnnl_dims[ndims - 1]};
+    } else {
+      return {group_size, dnnl_dims[ndims - 2], dnnl_dims[ndims - 1]};
+    }
   };
 
   auto getGemmStrides = [](dnnl::memory::dims dims,
                            odla_bool transpose) -> dnnl::memory::dims {
+    if (dims.size() == 2) {
+      return transpose ? dnnl::memory::dims{1, dims[0]}
+                       : dnnl::memory::dims{dims[1], 1};
+    }
+
     return transpose ? dnnl::memory::dims{dims[1] * dims[2], 1, dims[1]}
                      : dnnl::memory::dims{dims[1] * dims[2], dims[2], 1};
   };
 
   auto lhs_dims = getGemmDims(lhs->shape, transpose_lhs);
   auto rhs_dims = getGemmDims(rhs->shape, transpose_rhs);
-  assert(lhs_dims[0] == rhs_dims[0]);
+  // check the dim
+  assert(lhs_dims.size() == rhs_dims.size());
+  if (lhs_dims.size() == 2) {
+    assert(lhs_dims[1] == rhs_dims[0]);
+  } else {
+    assert(lhs_dims[0] == rhs_dims[0]);
+    assert(lhs_dims[2] == rhs_dims[1]);
+  }
+
   auto lhs_strides = getGemmStrides(lhs_dims, transpose_lhs);
   auto rhs_strides = getGemmStrides(rhs_dims, transpose_rhs);
   auto ret_dims = getGemmDims(output_dims, false);
@@ -1591,21 +1521,6 @@ odla_value batch_gemm_op(odla_value lhs, odla_bool transpose_lhs,
   lhs->mem = orig_lhs_mem;
   rhs->mem = orig_rhs_mem;
   return is_elements_add ? odla_Add(v, bias, id) : v;
-}
-
-odla_value odla_Gemm(odla_value lhs, odla_bool transpose_lhs, odla_value rhs,
-                     odla_bool transpose_rhs, odla_float32 alpha,
-                     odla_float32 beta, odla_value bias,
-                     odla_value_shape output_dims, const odla_value_id id) {
-  const auto& lhs_dims = lhs->shape;
-  const auto& rhs_dims = rhs->shape;
-  if (lhs_dims.size == 2 && rhs_dims.size == 2) {
-    return gemm_op(lhs, transpose_lhs, rhs, transpose_rhs, alpha, beta, bias,
-                   output_dims, id);
-  } else {
-    return batch_gemm_op(lhs, transpose_lhs, rhs, transpose_rhs, alpha, beta,
-                         bias, output_dims, id);
-  }
 }
 
 odla_value odla_Erf(odla_value input, const odla_value_id value_id) {
