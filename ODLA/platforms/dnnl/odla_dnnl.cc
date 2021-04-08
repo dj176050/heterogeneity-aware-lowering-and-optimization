@@ -31,6 +31,10 @@
 #include "dnnl_threadpool_iface.hpp"
 #include "dnnl_utils.h"
 
+#ifdef ODLA_DNNL_USE_INTEL_GPU
+#include "example_utils.hpp"
+#endif
+
 #if !defined(ODLA_VERSION_NUMBER) || (ODLA_VERSION_NUMBER < 50)
 #error This library requires minimum ODLA version 0.5
 #endif
@@ -77,8 +81,11 @@ struct _odla_computation {
   std::unordered_map<std::string, odla_value> outputs;
   std::unordered_map<std::string, std::pair<odla_value, void*>> outputs_v;
   target_opts opts;
-
+#ifdef ODLA_DNNL_USE_INTEL_GPU
+  _odla_computation() : eng(dnnl::engine::kind::gpu, 0), opts({BF16_DISABLE}) {}
+#else
   _odla_computation() : eng(dnnl::engine::kind::cpu, 0), opts({BF16_DISABLE}) {}
+#endif
 };
 
 struct _odla_context {
@@ -419,13 +426,22 @@ odla_status odla_BindToArgument(odla_value value, const odla_void* data_ptr,
     auto src_md = dnnl::memory::desc(value->mem.get_desc().dims(),
                                      getDataType(ODLA_FLOAT32),
                                      getFormatTag(value->shape));
+#ifdef ODLA_DNNL_USE_INTEL_GPU
+    auto src_mem = dnnl::memory(src_md, context->comp->eng);
+    write_to_dnnl_memory(const_cast<void*>(data_ptr),src_mem);
+#else
     auto src_mem =
         dnnl::memory(src_md, context->comp->eng, const_cast<void*>(data_ptr));
+#endif
     auto r = dnnl::reorder(src_mem, value->mem);
     r.execute(dnnl::stream(context->comp->eng),
               {{DNNL_ARG_FROM, src_mem}, {DNNL_ARG_TO, value->mem}});
   } else {
+#ifdef ODLA_DNNL_USE_INTEL_GPU
+    write_to_dnnl_memory(const_cast<void*>(data_ptr),value->mem);
+#else
     value->mem.set_data_handle(const_cast<void*>(data_ptr));
+#endif
   }
   return ODLA_SUCCESS;
 }
@@ -458,7 +474,12 @@ odla_value odla_CreateConstant(odla_value_type type, const void* ptr,
   //                      dnnl::memory::format_tag::hwio);
   rewrite_scalar_type(type);
   dnnl::memory::desc md = getMemoryDesc(type);
+#ifdef ODLA_DNNL_USE_INTEL_GPU
+    dnnl::memory mem = dnnl::memory(md, g_comp->eng);
+    write_to_dnnl_memory(const_cast<void*>(ptr),mem);
+#else
   dnnl::memory mem = dnnl::memory(md, g_comp->eng, const_cast<void*>(ptr));
+#endif
 
   if (g_comp->opts.bf16_mode == BF16_PERFORMACE_MODE &&
       type.element_type == ODLA_FLOAT32) {
