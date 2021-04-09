@@ -32,7 +32,7 @@
 #include "dnnl_utils.h"
 
 #ifdef ODLA_DNNL_USE_INTEL_GPU
-#include "example_utils.hpp"
+#include "../examples/example_utils.hpp"
 #endif
 
 #if !defined(ODLA_VERSION_NUMBER) || (ODLA_VERSION_NUMBER < 50)

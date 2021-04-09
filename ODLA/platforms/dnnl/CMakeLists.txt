@@ -44,3 +44,9 @@ target_compile_definitions(odla_dnnl_interpreter PRIVATE ODLA_DNNL_BUILD_AS_INTE
 target_link_libraries(odla_dnnl_interpreter ODLA ${dnnl})
 target_compile_options(odla_dnnl_interpreter PRIVATE ${DNNL_CXX_FLAGS})
 set(CMAKE_CXX_COMPILER_LAUNCHER ${DEFAULT_COMPILER})
+
+if (DNNL_GPU_COMPILER)
+target_compile_definitions(odla_dnnl_interpreter PRIVATE ODLA_DNNL_BUILD_AS_INTERPRETER ODLA_DNNL_USE_INTEL_GPU)
+target_compile_definitions(odla_dnnl PRIVATE ODLA_DNNL_USE_INTEL_GPU)
+else()
+endif()
